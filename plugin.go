@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 func startPlugin(plugin, pluginOpts, ssAddr string, isServer bool) (newAddr string, err error) {
@@ -32,8 +35,10 @@ func startPlugin(plugin, pluginOpts, ssAddr string, isServer bool) (newAddr stri
 }
 
 func execPlugin(plugin, pluginOpts, remoteHost, remotePort, localHost, localPort string) error {
-	if fileExists(plugin) {
-		plugin = "./" + plugin
+	if path, err := findPath(plugin); err != nil {
+		return err
+	} else {
+		plugin = path
 	}
 	logH := newLogHelper("[" + plugin + "]: ")
 	env := append(os.Environ(),
@@ -64,12 +69,49 @@ func execPlugin(plugin, pluginOpts, remoteHost, remotePort, localHost, localPort
 	return nil
 }
 
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
+func findPath(file string) (string, error) {
+	skip := []string{"/", "./", "../"}
+
+	for _, p := range skip {
+		if strings.HasPrefix(file, p) {
+			err := findExecutable(file)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Abs(file)
+		}
 	}
-	return !info.IsDir()
+
+	executable, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	currentExePath := filepath.Join(filepath.Dir(executable), file)
+
+	err = findExecutable(currentExePath)
+	if err == nil {
+		return currentExePath, nil
+	}
+
+	path := os.Getenv("PATH")
+	for _, dir := range filepath.SplitList(path) {
+		path := filepath.Join(dir, file)
+		if err := findExecutable(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("plugin not found!")
+}
+
+func findExecutable(file string) error {
+	fileInfo, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	if m := fileInfo.Mode(); !m.IsDir() && m&0111 != 0 {
+		return nil
+	}
+	return os.ErrPermission
 }
 
 func getFreePort() (string, error) {
